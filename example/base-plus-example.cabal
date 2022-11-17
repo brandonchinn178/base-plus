@@ -1,0 +1,27 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.35.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           base-plus-example
+version:        0.1.0.0
+build-type:     Simple
+
+library
+  exposed-modules:
+      Example
+  hs-source-dirs:
+      src
+  build-depends:
+      base-plus
+  default-language: Haskell2010
+
+executable base-plus-example
+  main-is: Main.hs
+  hs-source-dirs:
+      exe
+  build-depends:
+      base-plus
+    , base-plus-example
+  default-language: Haskell2010

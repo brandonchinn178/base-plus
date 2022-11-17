@@ -1,0 +1,57 @@
+name: base-plus
+version: 0.1.0.0
+license: BSD3
+author: Brandon Chinn <brandonchinn178@gmail.com>
+maintainer: Brandon Chinn <brandonchinn178@gmail.com>
+
+synopsis: A safer replacement for base
+description: A safer replacement for base. See README.md for more details.
+
+extra-source-files:
+  - README.md
+  - CHANGELOG.md
+
+github: brandonchinn178/base-plus
+
+ghc-options:
+  - -Wall
+  - -Wcompat
+  - -Widentities
+  - -Wincomplete-record-updates
+  - -Wincomplete-uni-patterns
+  - -Wmissing-export-lists
+  - -Wmissing-home-modules
+  - -Wpartial-fields
+  - -Wredundant-constraints
+
+# Use GHC2021 when GHC 9.2 is oldest supported
+default-extensions:
+  - GeneralizedNewtypeDeriving
+
+library:
+  source-dirs: src
+  dependencies:
+    - base >= 4.14 && < 5
+  default-extensions:
+    - PackageImports
+    - NoImplicitPrelude
+  when:
+    - condition: false
+      other-modules: Paths_base_plus
+
+tests:
+  base-plus-test:
+    main: Main.hs
+    source-dirs: test
+    dependencies:
+      - base-plus
+      - tasty
+      - tasty-hunit
+      - tasty-quickcheck
+    ghc-options:
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
+    when:
+      - condition: false
+        other-modules: Paths_base_plus

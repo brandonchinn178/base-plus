@@ -1,0 +1,20 @@
+name: base-plus-example
+version: 0.1.0.0
+
+library:
+  source-dirs: src
+  dependencies:
+    - base-plus
+  when:
+    - condition: false
+      other-modules: Paths_base_plus_example
+
+executable:
+  source-dirs: exe
+  main: Main.hs
+  dependencies:
+    - base-plus
+    - base-plus-example
+  when:
+    - condition: false
+      other-modules: Paths_base_plus_example
