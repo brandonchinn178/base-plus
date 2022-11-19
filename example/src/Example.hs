@@ -3,11 +3,11 @@ module Example where
 import Control.Exception (Exception, SomeException)
 import System.Environment (lookupEnv)
 
-foo :: IOE SomeException ()
-foo = do
-  liftIO $ putStrLn "hello world!"
-  user <- liftError $ lookupEnv "USER"
-  liftIO . putStrLn $
+foo :: IO ()
+foo = withCheckE $ do
+  checkE $ putStrLn "hello world!"
+  user <- checkE $ lookupEnv "USER"
+  putStrLn $
     case user of
       Nothing -> "$USER is not set"
       Just user' -> "$USER is set to: " ++ user'
@@ -20,5 +20,5 @@ instance Exception DecodeError
 decodeInt :: String -> IOE DecodeError Int
 decodeInt s =
   case read s of
-    Just x -> pure x
-    Nothing -> throwIO $ DecodeError $ "Not an int: " ++ s
+    Just x -> pureIO x
+    Nothing -> badIO $ DecodeError $ "Not an int: " ++ s

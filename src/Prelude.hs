@@ -1,12 +1,23 @@
 module Prelude (
-  IO,
+  IOThrowable (..),
+  IOTotal,
   IOE,
+  IO,
+  pureIO,
+  badIO,
+  mapError,
+  liftError,
+  convertIO,
+  unsafeConvertIOWith,
+  MonadIO (..),
+  LiftException (..),
+  MonadThrowable (..),
   Main,
   runMain,
-  liftError,
-  unwrapIOE,
-  liftIO,
-  throwIO,
+  runMainWith,
+  MainOptions (..),
+  defaultMainOptions,
+
   putStrLn,
   read,
   getLine,
@@ -55,19 +66,22 @@ import qualified "base" Prelude as X
 
 import "this" GHC.IO
 
-throwIO :: e -> IOE e a
-throwIO e = toIOE $ pure (Left e)
+{-
+TODO:
+* No MonadFail for IO
+* Add ImpureException type with String message + Dynamic metadata
+* Support async exceptions (bracket + mask)
+* Implement ReaderT with MonadThrowable
+-}
 
--- TODO: LocaleEncodingError?
 putStrLn :: String -> IO ()
-putStrLn = unsafeToIO . X.putStrLn
+putStrLn = convertIO . X.putStrLn
 
 read :: Read a => String -> Maybe a
 read = readMaybe
 
--- TODO: IOE
 getLine :: IO String
-getLine = unsafeToIO X.getLine
+getLine = convertIO X.getLine
 
 {-
 head :: Foldable f => f a -> Maybe a

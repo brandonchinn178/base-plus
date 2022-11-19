@@ -1,20 +1,29 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module GHC.IO (
-  IO,
-  unsafeToIO,
+  IOThrowable (..),
+  IOTotal,
   IOE,
-  convertIO,
-  unsafeConvertIOWith,
-  fromIOE,
-  toIOE,
-  unwrapIOE,
+  IO,
+  pureIO,
+  badIO,
   mapError,
   liftError,
 
-  -- * Type classes
+  -- * Interop with unchecked IO
+  convertIO,
+  unsafeConvertIOWith,
+
+  -- * Typeclasses
   MonadIO (..),
+  LiftException (..),
+  MonadThrowable (..),
 
   -- * Main functions
   -- $mainFunctions
@@ -25,21 +34,34 @@ module GHC.IO (
   defaultMainOptions,
 ) where
 
-import "base" Control.Exception (Exception, SomeException, toException, try)
+import "base" Control.Exception (
+  ErrorCall (..),
+  Exception,
+  SomeAsyncException (..),
+  SomeException,
+  fromException,
+  toException,
+  tryJust,
+ )
 import "base" Data.Bifunctor (first)
+import "base" Data.Void (Void, absurd)
 import qualified "base" GHC.IO as X
 import "base" GHC.IO.Encoding (TextEncoding, setLocaleEncoding)
 import qualified "base" GHC.IO.Encoding as Encoding
-import "base" GHC.Stack (HasCallStack)
+import "base" GHC.Stack (HasCallStack, withFrozenCallStack)
 import "base" Prelude (
   Applicative (..),
+  Bool (..),
   Either (..),
   Functor (..),
   Maybe (..),
   Monad (..),
+  either,
   error,
+  errorWithoutStackTrace,
   id,
   maybe,
+  otherwise,
   show,
   ($),
   (++),
@@ -47,81 +69,122 @@ import "base" Prelude (
   (<$>),
  )
 
-newtype IO a = IO (X.IO a)
-  deriving (Functor, Applicative, Monad)
+-- | A checked IO action that can throw exceptions of type @e@.
+newtype IOThrowable e a = UnsafeIOThrowable {unsafeIOThrowable :: X.IO (Either e a)}
 
--- | Convert an action using 'X.IO' from `base` into the new 'IO' type.
---
--- Caller should ensure that the given action cannot throw an error. If
--- it can, use 'convertIO' instead.
-unsafeToIO :: X.IO a -> IO a
-unsafeToIO = IO
-
-newtype IOE e a = IOE {unIOE :: IO (Either e a)}
-
-instance Functor (IOE e) where
-  fmap f = IOE . (fmap . fmap) f . unIOE
-instance Applicative (IOE e) where
-  pure = IOE . pure . Right
-  IOE mf <*> IOE ma =
-    IOE $
+instance Functor (IOThrowable e) where
+  fmap f = UnsafeIOThrowable . (fmap . fmap) f . unsafeIOThrowable
+instance Applicative (IOThrowable e) where
+  pure = UnsafeIOThrowable . pure . Right
+  UnsafeIOThrowable mf <*> UnsafeIOThrowable ma =
+    UnsafeIOThrowable $
       mf >>= \case
         Left e -> pure (Left e)
         Right f -> fmap f <$> ma
-instance Monad (IOE e) where
-  IOE ma >>= k =
-    IOE $
+instance Monad (IOThrowable e) where
+  UnsafeIOThrowable ma >>= k =
+    UnsafeIOThrowable $
       ma >>= \case
         Left e -> pure (Left e)
-        Right a -> unIOE (k a)
+        Right a -> unsafeIOThrowable (k a)
 
--- TODO: don't catch async exceptions
-convertIO :: X.IO a -> IOE SomeException a
-convertIO = IOE . unsafeToIO . try
+-- | A checked IO action that can not throw any exceptions.
+type IOTotal = IOThrowable Void
 
--- TODO: don't catch async exceptions
-unsafeConvertIOWith :: HasCallStack => (SomeException -> Maybe e) -> X.IO a -> IOE e a
-unsafeConvertIOWith f = mapError go . convertIO
-  where
-    go e =
-      case f e of
-        Just e' -> e'
-        Nothing -> error $ "unsafeConvertIOWith called on action that threw an unexpected error: " ++ show e
+-- | A checked IO action that returns possible exceptions.
+type IOE e a = IOTotal (Either e a)
 
-fromIOE :: IOE e a -> IO (Either e a)
-fromIOE = unIOE
+-- | A checked IO action that returns any possible exception.
+type IO a = IOE SomeException a
 
-toIOE :: IO (Either e a) -> IOE e a
-toIOE = IOE
+{----- IOThrowable operations -----}
 
--- | Handle the 'IOE' with the given callback.
---
--- Useful with LambdaCase:
---
--- @
--- main :: Main
--- main = runMain $ do
---   action `unwrapIOE` \case
---     Left e -> putStrLn $ "Got error: " ++ show e
---     Right x -> putStrLn $ "Got success: " ++ show x
--- @
-unwrapIOE :: IOE e a -> (Either e a -> IO b) -> IO b
-unwrapIOE (IOE m) f = m >>= f
+pureIO :: a -> IOE e a
+pureIO = pure . Right
+
+badIO :: e -> IOE e a
+badIO = pure . Left
 
 mapError :: (e1 -> e2) -> IOE e1 a -> IOE e2 a
-mapError f = IOE . fmap (first f) . unIOE
+mapError f m = first f <$> m
 
 liftError :: Exception e => IOE e a -> IOE SomeException a
 liftError = mapError toException
 
+{----- Interop with unchecked IO -----}
+
+-- | Convert an unchecked IO action into a checked IO action.
+convertIO :: X.IO a -> IO a
+convertIO = UnsafeIOThrowable . fmap Right . tryJust isSyncException
+  where
+    isSyncException e
+      -- not async exceptions
+      | isAsyncException e = Nothing
+      -- not exceptions from `error` or `undefined`
+      -- TODO: or should we capture impure exceptions?
+      | Just ErrorCallWithLocation{} <- fromException e = Nothing
+      -- otherwise, it's sync
+      | otherwise = Just e
+
+-- | Convert an unchecked IO action into a checked IO action that can return an
+-- exception specified by the given function.
+--
+-- If the IO action threw a synchronous exception (precise or imprecise) that is
+-- not handled by the given function, this function will error.
+unsafeConvertIOWith :: HasCallStack => (SomeException -> Maybe e) -> X.IO a -> IOE e a
+unsafeConvertIOWith f = UnsafeIOThrowable . fmap Right . tryJust isWantedException
+  where
+    isWantedException e =
+      case f e of
+        _ | isAsyncException e -> Nothing
+        Just e' -> Just e'
+        Nothing ->
+          withFrozenCallStack . error $
+            "unsafeConvertIOWith called on action that threw an unexpected error: "
+              ++ show e
+
+isAsyncException :: SomeException -> Bool
+isAsyncException e =
+  case fromException e of
+    Just SomeAsyncException{} -> True
+    Nothing -> False
+
 {----- Typeclasses -----}
 
 class MonadIO m where
-  liftIO :: IO a -> m a
-instance MonadIO IO where
-  liftIO = id
-instance MonadIO (IOE e) where
-  liftIO = toIOE . fmap Right
+  liftIO :: IOTotal a -> m a
+instance MonadIO (IOThrowable e) where
+  liftIO = UnsafeIOThrowable . fmap (first absurd) . unsafeIOThrowable
+
+class LiftException e1 e2 where
+  liftE :: e1 -> e2
+instance {-# OVERLAPPABLE #-} Exception e => LiftException e SomeException where
+  liftE = toException
+instance {-# OVERLAPPABLE #-} LiftException e e where
+  liftE = id
+
+class MonadThrowable mTotal mThrowable where
+  type ThrowableException mThrowable
+
+  checkE ::
+    (LiftException e1 e2, ThrowableException mThrowable ~ e2) =>
+    mTotal (Either e1 a)
+    -> mThrowable a
+
+  withCheckE ::
+    (ThrowableException mThrowable ~ e) =>
+    mThrowable (Either e a)
+    -> mTotal (Either e a)
+
+instance MonadThrowable (IOThrowable Void) (IOThrowable e) where
+  type ThrowableException (IOThrowable e) = e
+  checkE (UnsafeIOThrowable m) =
+    UnsafeIOThrowable $
+      m >>= \case
+        Left e -> absurd e
+        Right (Left e1) -> pure $ Left (liftE e1)
+        Right (Right x) -> pure $ Right x
+  withCheckE = UnsafeIOThrowable . fmap (Right . either Left id) . unsafeIOThrowable
 
 {----- Main functions -----}
 
@@ -140,8 +203,13 @@ runMain :: IO () -> Main
 runMain = runMainWith defaultMainOptions
 
 runMainWith :: MainOptions -> IO () -> Main
-runMainWith MainOptions{..} (IO m) =
-  setEncoding >> m
+runMainWith MainOptions{..} m =
+  setEncoding
+    >> unsafeIOThrowable m
+    >>= \case
+      Left e -> absurd e
+      Right (Left e) -> errorWithoutStackTrace (show e)
+      Right (Right ()) -> pure ()
   where
     setEncoding = maybe (pure ()) setLocaleEncoding localeEncoding
 
