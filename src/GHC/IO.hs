@@ -49,13 +49,13 @@ import qualified "base" GHC.IO as X
 import "base" GHC.IO.Encoding (TextEncoding, setLocaleEncoding)
 import qualified "base" GHC.IO.Encoding as Encoding
 import "base" GHC.Stack (HasCallStack, withFrozenCallStack)
+import qualified "base" Prelude as X
 import "base" Prelude (
   Applicative (..),
   Bool (..),
   Either (..),
   Functor (..),
   Maybe (..),
-  Monad (..),
   either,
   error,
   errorWithoutStackTrace,
@@ -69,27 +69,9 @@ import "base" Prelude (
   (<$>),
  )
 
--- | A checked IO action that can throw exceptions of type @e@.
-newtype IOThrowable e a = UnsafeIOThrowable {unsafeIOThrowable :: X.IO (Either e a)}
-
-instance Functor (IOThrowable e) where
-  fmap f = UnsafeIOThrowable . (fmap . fmap) f . unsafeIOThrowable
-instance Applicative (IOThrowable e) where
-  pure = UnsafeIOThrowable . pure . Right
-  UnsafeIOThrowable mf <*> UnsafeIOThrowable ma =
-    UnsafeIOThrowable $
-      mf >>= \case
-        Left e -> pure (Left e)
-        Right f -> fmap f <$> ma
-instance Monad (IOThrowable e) where
-  UnsafeIOThrowable ma >>= k =
-    UnsafeIOThrowable $
-      ma >>= \case
-        Left e -> pure (Left e)
-        Right a -> unsafeIOThrowable (k a)
-
 -- | A checked IO action that can not throw any exceptions.
-type IOTotal = IOThrowable Void
+newtype IOTotal a = UnsafeIOTotal {unsafeIOTotal :: X.IO a}
+  deriving (Functor, Applicative, X.Monad)
 
 -- | A checked IO action that returns possible exceptions.
 type IOE e a = IOTotal (Either e a)
@@ -115,7 +97,7 @@ liftError = mapError toException
 
 -- | Convert an unchecked IO action into a checked IO action.
 convertIO :: X.IO a -> IO a
-convertIO = UnsafeIOThrowable . fmap Right . tryJust isSyncException
+convertIO = UnsafeIOTotal . tryJust isSyncException
   where
     isSyncException e
       -- not async exceptions
@@ -132,7 +114,7 @@ convertIO = UnsafeIOThrowable . fmap Right . tryJust isSyncException
 -- If the IO action threw a synchronous exception (precise or imprecise) that is
 -- not handled by the given function, this function will error.
 unsafeConvertIOWith :: HasCallStack => (SomeException -> Maybe e) -> X.IO a -> IOE e a
-unsafeConvertIOWith f = UnsafeIOThrowable . fmap Right . tryJust isWantedException
+unsafeConvertIOWith f = UnsafeIOTotal . tryJust isWantedException
   where
     isWantedException e =
       case f e of
@@ -149,42 +131,70 @@ isAsyncException e =
     Just SomeAsyncException{} -> True
     Nothing -> False
 
+{----- IOThrowable -----}
+
+-- $iothrowable-usage
+-- A common pattern is to allow a function to early-exit if we see any
+-- errors. This functionality is enabled by 'checkE' and 'withCheckE':
+--
+-- @
+-- foo :: IO ()
+-- foo = withCheckE $ do
+--   s <- checkE $ readFile "foo.txt"
+--   writeFile "foo_upper.txt" (map toUpper s) >>= \case
+--     Left e -> putStrLn $ "Could not write output: " ++ show e
+--     Right () -> return ()
+-- @
+--
+-- Internally, this is implemented with 'IOThrowable', but that should be
+-- considered an implementation detail.
+
+-- | A checked IO action that can throw exceptions of type @e@.
+newtype IOThrowable e a = IOThrowable {unIOThrowable :: IOTotal (Either e a)}
+
+instance Functor (IOThrowable e) where
+  fmap f = IOThrowable . (fmap . fmap) f . unIOThrowable
+instance Applicative (IOThrowable e) where
+  pure = IOThrowable . pure . Right
+  IOThrowable mf <*> IOThrowable ma =
+    IOThrowable $
+      mf >>= \case
+        Left e -> pure (Left e)
+        Right f -> fmap f <$> ma
+instance X.Monad (IOThrowable e) where
+  IOThrowable ma >>= k =
+    IOThrowable $
+      ma >>= \case
+        Left e -> pure (Left e)
+        Right a -> unIOThrowable (k a)
+
+checkE :: Convertible e1 e2 => IOE e1 a -> IOThrowable e2 a
+checkE = IOThrowable . fmap (first convert)
+
+withCheckE :: IOThrowable e (Either e a) -> IOE e a
+withCheckE = fmap (either Left id) . unIOThrowable
+
 {----- Typeclasses -----}
 
-class MonadIO m where
-  liftIO :: IOTotal a -> m a
-instance MonadIO (IOThrowable e) where
-  liftIO = UnsafeIOThrowable . fmap (first absurd) . unsafeIOThrowable
+class Convertible from to where
+  convert :: from -> to
+class Convertible1 from to where
+  convert1 :: from a -> to a
+instance {-# OVERLAPPABLE #-} Exception e => Convertible e SomeException where
+  convert = toException
+instance {-# OVERLAPPABLE #-} Convertible a a where
+  convert = id
+instance {-# OVERLAPPABLE #-} Convertible1 f f where
+  convert1 = id
 
-class LiftException e1 e2 where
-  liftE :: e1 -> e2
-instance {-# OVERLAPPABLE #-} Exception e => LiftException e SomeException where
-  liftE = toException
-instance {-# OVERLAPPABLE #-} LiftException e e where
-  liftE = id
+instance Convertible1 IOTotal (IOThrowable e) where
+  convert1 = IOThrowable . fmap Right
 
-class MonadThrowable mTotal mThrowable where
-  type ThrowableException mThrowable
+(>>=) :: (Convertible1 n m, X.Monad m) => n a -> (a -> n b) -> m b
+m >>= k = convert1 m X.>>= convert1 . k
 
-  checkE ::
-    (LiftException e1 e2, ThrowableException mThrowable ~ e2) =>
-    mTotal (Either e1 a)
-    -> mThrowable a
-
-  withCheckE ::
-    (ThrowableException mThrowable ~ e) =>
-    mThrowable (Either e a)
-    -> mTotal (Either e a)
-
-instance MonadThrowable (IOThrowable Void) (IOThrowable e) where
-  type ThrowableException (IOThrowable e) = e
-  checkE (UnsafeIOThrowable m) =
-    UnsafeIOThrowable $
-      m >>= \case
-        Left e -> absurd e
-        Right (Left e1) -> pure $ Left (liftE e1)
-        Right (Right x) -> pure $ Right x
-  withCheckE = UnsafeIOThrowable . fmap (Right . either Left id) . unsafeIOThrowable
+(>>) :: (Convertible1 n m, X.Monad m) => n a -> n b -> m b
+a >> b = convert1 a X.>> convert1 b
 
 {----- Main functions -----}
 
@@ -205,11 +215,10 @@ runMain = runMainWith defaultMainOptions
 runMainWith :: MainOptions -> IO () -> Main
 runMainWith MainOptions{..} m =
   setEncoding
-    >> unsafeIOThrowable m
+    >> unsafeIOTotal m
     >>= \case
-      Left e -> absurd e
-      Right (Left e) -> errorWithoutStackTrace (show e)
-      Right (Right ()) -> pure ()
+      Left e -> errorWithoutStackTrace (show e)
+      Right () -> pure ()
   where
     setEncoding = maybe (pure ()) setLocaleEncoding localeEncoding
 
