@@ -5,7 +5,7 @@ module System.Environment (
 import "base" Control.Exception (Exception, SomeException, fromException)
 import "base" GHC.IO.Exception (IOException (..))
 import qualified "base" System.Environment as X
-import "this" GHC.IO (IOE, unsafeConvertIOWith)
+import "this" System.IO (IOE, unsafeConvertIOWith)
 import "base" Prelude (Maybe (..), Show, String, ($), (.))
 
 -- TODO: move to GHC.IO.Encoding.Failure

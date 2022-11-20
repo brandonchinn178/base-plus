@@ -27,9 +27,9 @@ library
       Control.Exception
       Data.Foldable
       Data.List
-      GHC.IO
       Prelude
       System.Environment
+      System.IO
   hs-source-dirs:
       src
   default-extensions:

@@ -1,23 +1,18 @@
 module Prelude (
-  IOThrowable (..),
-  IOTotal,
   IOE,
   IO,
-  pureIO,
-  badIO,
   mapError,
   liftError,
+  throw,
+  catch,
+  try,
   convertIO,
   unsafeConvertIOWith,
-  MonadIO (..),
-  LiftException (..),
-  MonadThrowable (..),
   Main,
   runMain,
   runMainWith,
   MainOptions (..),
   defaultMainOptions,
-
   putStrLn,
   read,
   getLine,
@@ -35,10 +30,11 @@ module Prelude (
   pure,
   return,
   show,
-  (++),
-  (==),
   ($),
+  (++),
   (.),
+  (==),
+  (>>=),
 ) where
 
 import "base" Text.Read (Read, readMaybe)
@@ -61,17 +57,18 @@ import "base" Prelude as X (
   (++),
   (.),
   (==),
+  (>>=),
  )
 import qualified "base" Prelude as X
 
-import "this" GHC.IO
+import "this" System.IO
 
 {-
 TODO:
-* No MonadFail for IO
-* Add ImpureException type with String message + Dynamic metadata
-* Support async exceptions (bracket + mask)
-* Implement ReaderT with MonadThrowable
+  * No MonadFail for IO
+  * Add ImpureException type with String message + Dynamic metadata
+  * Support async exceptions (bracket + mask)
+  * Implement ReaderT with MonadThrowable
 -}
 
 putStrLn :: String -> IO ()

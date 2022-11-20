@@ -4,9 +4,9 @@ import Control.Exception (Exception, SomeException)
 import System.Environment (lookupEnv)
 
 foo :: IO ()
-foo = withCheckE $ do
-  checkE $ putStrLn "hello world!"
-  user <- checkE $ lookupEnv "USER"
+foo = do
+  putStrLn "hello world!"
+  user <- liftError $ lookupEnv "USER"
   putStrLn $
     case user of
       Nothing -> "$USER is not set"
@@ -20,5 +20,5 @@ instance Exception DecodeError
 decodeInt :: String -> IOE DecodeError Int
 decodeInt s =
   case read s of
-    Just x -> pureIO x
-    Nothing -> badIO $ DecodeError $ "Not an int: " ++ s
+    Just x -> pure x
+    Nothing -> throw $ DecodeError $ "Not an int: " ++ s
